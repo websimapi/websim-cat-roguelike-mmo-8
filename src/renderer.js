@@ -14,12 +14,6 @@ export class Renderer {
         this.shadowCanvas.height = canvas.height;
         this.shadowCtx = this.shadowCanvas.getContext('2d');
 
-        // Secondary Shadow Buffer (for High Shadows masking)
-        this.shadowCanvas2 = document.createElement('canvas');
-        this.shadowCanvas2.width = canvas.width; 
-        this.shadowCanvas2.height = canvas.height;
-        this.shadowCtx2 = this.shadowCanvas2.getContext('2d');
-
         // Reusable bucket arrays to reduce GC
         this.entitiesByRow = Array.from({ length: CONFIG.GRID_H }, () => []);
         
@@ -49,8 +43,6 @@ export class Renderer {
         // Resize shadow buffer to match main canvas
         this.shadowCanvas.width = this.canvas.width;
         this.shadowCanvas.height = this.canvas.height;
-        this.shadowCanvas2.width = this.canvas.width;
-        this.shadowCanvas2.height = this.canvas.height;
 
         this.ctx.imageSmoothingEnabled = false;
         
@@ -192,19 +184,39 @@ export class Renderer {
             // Shop Bounds for shadow casting
             const shopMinX = 2.5;
             const shopMaxX = 6.5;
-            const shopBaseY = 3.0;
+            const shopBaseY = 4.0;
             // Only lift shadow if pointing NORTH (sy < 0) and Player is SOUTH of shop
             // sy is the Y component of the shadow vector. Negative means pointing up (North).
             const shadowPointsNorth = sy < 0; 
 
             allChars.forEach(item => {
                 const { obj } = item;
-                // Check if casting ONTO shop
-                if (shadowPointsNorth && 
-                    obj.y > shopBaseY && 
-                    obj.y < shopBaseY + 6 && 
-                    obj.x > shopMinX && 
-                    obj.x < shopMaxX) {
+                
+                let isHigh = false;
+
+                // Strict check: Does the shadow vector actually intersect the shop face?
+                if (shadowPointsNorth && obj.y > shopBaseY) {
+                    // Tip of shadow relative to feet (using global sun vector)
+                    const tipY = obj.y + sy; 
+                    
+                    // Check if shadow crosses the Shop Base Line
+                    if (tipY < shopBaseY) {
+                        // Calculate Intersection X
+                        // t = (targetY - startY) / dy => (shopBaseY - obj.y) / sy
+                        const t = (shopBaseY - obj.y) / sy;
+                        const ix = obj.x + t * sx;
+                        
+                        if (ix > shopMinX && ix < shopMaxX) {
+                            isHigh = true;
+                        }
+                    }
+                }
+
+                if (isHigh) {
+                    // If casting on shop, add to BOTH:
+                    // 1. Ground Shadow: Merges with Shop Shadow on the floor.
+                    // 2. High Shadow: Draws on shop face (clipped to wall area).
+                    groundShadows.push(item);
                     highShadows.push(item);
                 } else {
                     groundShadows.push(item);
@@ -218,18 +230,7 @@ export class Renderer {
             sCtx.fillStyle = 'black';
             sCtx.filter = 'brightness(0)'; 
 
-            // A. Shop Shadow (Always Ground)
-            const shopPos = this.gridToScreen(3, 2, camX, camY);
-            if (shopPos.x > -tileSize * 5 && shopPos.x < width + tileSize * 5 && 
-                shopPos.y > -tileSize * 5 && shopPos.y < height + tileSize * 5) {
-                sCtx.save();
-                sCtx.translate(shopPos.x + tileSize * 1.5, shopPos.y + tileSize * 2);
-                sCtx.transform(1, 0, -sx, -sy, 0, 0);
-                sCtx.drawImage(ASSETS.shop, -tileSize * 1.5, -tileSize * 2, tileSize * 3, tileSize * 2);
-                sCtx.restore();
-            }
-
-            // B. Ground Character Shadows
+            // A. Ground Character Shadows (Draw FIRST)
             groundShadows.forEach(({ obj, isNpc }) => {
                 const pos = this.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
                 if (pos.x < -tileSize || pos.x > width + tileSize || pos.y < -tileSize || pos.y > height + tileSize) return;
@@ -244,6 +245,19 @@ export class Renderer {
                 drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
                 sCtx.restore();
             });
+
+            // B. Shop Shadow (Always Ground) - Draw SECOND to layer ON TOP of characters (if overlapping)
+            // This ensures the massive shop shadow occludes character ground shadows if perceived as distinct layers,
+            // though they usually merge due to same color/opacity.
+            const shopPos = this.gridToScreen(3, 2, camX, camY);
+            if (shopPos.x > -tileSize * 5 && shopPos.x < width + tileSize * 5 && 
+                shopPos.y > -tileSize * 5 && shopPos.y < height + tileSize * 5) {
+                sCtx.save();
+                sCtx.translate(shopPos.x + tileSize * 1.5, shopPos.y + tileSize * 2);
+                sCtx.transform(1, 0, -sx, -sy, 0, 0);
+                sCtx.drawImage(ASSETS.shop, -tileSize * 1.5, -tileSize * 2, tileSize * 3, tileSize * 2);
+                sCtx.restore();
+            }
 
             sCtx.restore();
 
@@ -363,12 +377,20 @@ export class Renderer {
 
             } else if (item.type === 'high_shadows_batch') {
                 // Batch Render High Shadows to reusable shadow buffer to flatten overlaps
-                const sCtx2 = this.shadowCtx2;
-                sCtx2.clearRect(0, 0, width, height); 
+                const sCtx = this.shadowCtx;
+                sCtx.clearRect(0, 0, width, height); // Clear buffer (previously used by ground shadows)
                 
-                sCtx2.save();
-                sCtx2.fillStyle = 'black';
-                sCtx2.globalAlpha = 1.0; // Draw opaque silhouettes first
+                sCtx.save();
+                
+                // Clipping: Only draw above the Shop Base Line (the Wall)
+                // This prevents the high shadow from drawing on the ground and double-darkening the shop shadow
+                const shopBaseScreenY = this.gridToScreen(0, 4.0, camX, camY).y; // Screen Y for Grid Y=4.0
+                sCtx.beginPath();
+                sCtx.rect(0, 0, width, shopBaseScreenY);
+                sCtx.clip();
+
+                sCtx.fillStyle = 'black';
+                sCtx.globalAlpha = 1.0; // Draw opaque silhouettes first
                 
                 item.items.forEach(({ obj, isNpc }) => {
                     const pos = this.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
@@ -380,19 +402,19 @@ export class Renderer {
                     const cx = pos.x + tileSize / 2;
                     const pivotY = pos.y + feetOffset;
 
-                    sCtx2.save();
-                    sCtx2.translate(cx, pivotY);
-                    sCtx2.transform(1, 0, -item.sx, -item.sy, 0, 0);
-                    drawCharacter(sCtx2, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
-                    sCtx2.restore();
+                    sCtx.save();
+                    sCtx.translate(cx, pivotY);
+                    sCtx.transform(1, 0, -item.sx, -item.sy, 0, 0);
+                    drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
+                    sCtx.restore();
                 });
-                sCtx2.restore();
+                sCtx.restore();
 
                 // Composite the flattened shadows onto the main canvas with single uniform opacity
                 ctx.save();
                 ctx.globalAlpha = item.opacity;
                 ctx.globalCompositeOperation = 'multiply';
-                ctx.drawImage(this.shadowCanvas2, 0, 0);
+                ctx.drawImage(this.shadowCanvas, 0, 0);
                 ctx.restore();
             }
         });
