@@ -174,7 +174,6 @@ export class Renderer {
         // Ground shadows are rendered into an offscreen buffer to prevent double-darkening.
         
         const highShadows = []; // Shadows to draw on top of shop
-        const groundShadows = []; // Shadows to draw on ground
 
         if (shadowOpacity > 0.01) {
             const allChars = [];
@@ -185,7 +184,6 @@ export class Renderer {
             const shopMinX = 2.5;
             const shopMaxX = 6.5;
             const shopBaseY = 4.0;
-            const shopBaseScreenY = this.gridToScreen(0, shopBaseY, camX, camY).y;
 
             // Only lift shadow if pointing NORTH (sy < 0) and Player is SOUTH of shop
             // sy is the Y component of the shadow vector. Negative means pointing up (North).
@@ -194,8 +192,6 @@ export class Renderer {
             allChars.forEach(item => {
                 const { obj } = item;
                 
-                let isHigh = false;
-
                 // Strict check: Does the shadow vector actually intersect the shop face?
                 if (shadowPointsNorth && obj.y > shopBaseY) {
                     // Tip of shadow relative to feet (using global sun vector)
@@ -209,20 +205,9 @@ export class Renderer {
                         const ix = obj.x + t * sx;
                         
                         if (ix > shopMinX && ix < shopMaxX) {
-                            isHigh = true;
+                            highShadows.push(item);
                         }
                     }
-                }
-
-                if (isHigh) {
-                    // If casting on shop, add to BOTH:
-                    // 1. Ground Shadow: Merges with Shop Shadow on the floor.
-                    // 2. High Shadow: Draws on shop face (clipped to wall area).
-                    // We flag isHigh=true so the ground shadow renderer knows to clip it (stopping at the wall).
-                    groundShadows.push({ ...item, isHigh: true });
-                    highShadows.push(item);
-                } else {
-                    groundShadows.push({ ...item, isHigh: false });
                 }
             });
 
@@ -234,8 +219,11 @@ export class Renderer {
             // Note: We avoid ctx.filter here for compatibility and robust color merging.
             // Instead, we use composite operations below to force everything to black silhouette.
 
-            // A. Ground Character Shadows (Draw FIRST)
-            groundShadows.forEach(({ obj, isNpc, isHigh }) => {
+            // A. Ground Character Shadows (Draw ALL)
+            // We draw all shadows on the ground without clipping. 
+            // The ones "behind" the shop will simply be occluded by the Shop sprite when it is drawn later.
+            // This prevents "slither" gaps where the clipping might have been slightly off.
+            allChars.forEach(({ obj, isNpc }) => {
                 const pos = this.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
                 if (pos.x < -tileSize || pos.x > width + tileSize || pos.y < -tileSize || pos.y > height + tileSize) return;
 
@@ -244,15 +232,6 @@ export class Renderer {
                 const pivotY = pos.y + feetOffset;
 
                 sCtx.save();
-
-                // CLIP: If this shadow hits the high wall, do NOT draw the part that goes "through" the wall on the ground.
-                if (isHigh) {
-                    sCtx.beginPath();
-                    // Draw only below the shop base line (screen Y increases downwards)
-                    sCtx.rect(0, shopBaseScreenY, width, height - shopBaseScreenY);
-                    sCtx.clip();
-                }
-
                 sCtx.translate(cx, pivotY);
                 sCtx.transform(1, 0, -sx, -sy, 0, 0);
                 drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
@@ -399,11 +378,8 @@ export class Renderer {
                 
                 sCtx.save();
                 
-                // Clipping: Only draw above the Shop Base Line (the Wall)
-                const shopBaseScreenY = this.gridToScreen(0, 4.0, camX, camY).y; // Screen Y for Grid Y=4.0
-                sCtx.beginPath();
-                sCtx.rect(0, 0, width, shopBaseScreenY);
-                sCtx.clip();
+                // No Clipping here either - we rely entirely on the Mask (destination-in) below
+                // to ensure the shadow only appears on the Shop structure itself.
 
                 sCtx.fillStyle = 'black';
                 sCtx.globalAlpha = 1.0;
