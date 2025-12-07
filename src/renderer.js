@@ -14,6 +14,12 @@ export class Renderer {
         this.shadowCanvas.height = canvas.height;
         this.shadowCtx = this.shadowCanvas.getContext('2d');
 
+        // Secondary Shadow Buffer (for High Shadows masking)
+        this.shadowCanvas2 = document.createElement('canvas');
+        this.shadowCanvas2.width = canvas.width; 
+        this.shadowCanvas2.height = canvas.height;
+        this.shadowCtx2 = this.shadowCanvas2.getContext('2d');
+
         // Reusable bucket arrays to reduce GC
         this.entitiesByRow = Array.from({ length: CONFIG.GRID_H }, () => []);
         
@@ -43,6 +49,8 @@ export class Renderer {
         // Resize shadow buffer to match main canvas
         this.shadowCanvas.width = this.canvas.width;
         this.shadowCanvas.height = this.canvas.height;
+        this.shadowCanvas2.width = this.canvas.width;
+        this.shadowCanvas2.height = this.canvas.height;
 
         this.ctx.imageSmoothingEnabled = false;
         
@@ -355,12 +363,12 @@ export class Renderer {
 
             } else if (item.type === 'high_shadows_batch') {
                 // Batch Render High Shadows to reusable shadow buffer to flatten overlaps
-                const sCtx = this.shadowCtx;
-                sCtx.clearRect(0, 0, width, height); // Clear buffer (previously used by ground shadows)
+                const sCtx2 = this.shadowCtx2;
+                sCtx2.clearRect(0, 0, width, height); 
                 
-                sCtx.save();
-                sCtx.fillStyle = 'black';
-                sCtx.globalAlpha = 1.0; // Draw opaque silhouettes first
+                sCtx2.save();
+                sCtx2.fillStyle = 'black';
+                sCtx2.globalAlpha = 1.0; // Draw opaque silhouettes first
                 
                 item.items.forEach(({ obj, isNpc }) => {
                     const pos = this.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
@@ -372,19 +380,19 @@ export class Renderer {
                     const cx = pos.x + tileSize / 2;
                     const pivotY = pos.y + feetOffset;
 
-                    sCtx.save();
-                    sCtx.translate(cx, pivotY);
-                    sCtx.transform(1, 0, -item.sx, -item.sy, 0, 0);
-                    drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
-                    sCtx.restore();
+                    sCtx2.save();
+                    sCtx2.translate(cx, pivotY);
+                    sCtx2.transform(1, 0, -item.sx, -item.sy, 0, 0);
+                    drawCharacter(sCtx2, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
+                    sCtx2.restore();
                 });
-                sCtx.restore();
+                sCtx2.restore();
 
                 // Composite the flattened shadows onto the main canvas with single uniform opacity
                 ctx.save();
                 ctx.globalAlpha = item.opacity;
                 ctx.globalCompositeOperation = 'multiply';
-                ctx.drawImage(this.shadowCanvas, 0, 0);
+                ctx.drawImage(this.shadowCanvas2, 0, 0);
                 ctx.restore();
             }
         });
