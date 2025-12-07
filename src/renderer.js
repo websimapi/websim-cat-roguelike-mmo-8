@@ -181,7 +181,7 @@ export class Renderer {
             Object.values(gameState.players).forEach(p => allChars.push({ obj: p, isNpc: false }));
             gameState.npcs.forEach(npc => allChars.push({ obj: npc, isNpc: true }));
 
-            // Shop Bounds for shadow casting
+            // Shop Bounds for shadow casting (Visual Sprite is at row 3)
             const shopMinX = 2.5;
             const shopMaxX = 6.5;
             const shopBaseY = 4.0;
