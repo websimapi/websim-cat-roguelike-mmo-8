@@ -427,6 +427,13 @@ export class Renderer {
                 sCtx.globalCompositeOperation = 'source-in';
                 sCtx.fillRect(0, 0, width, height);
 
+                // MASK WITH SHOP SPRITE
+                // This ensures shadows are only drawn on the shop structure itself, 
+                // preventing them from "floating" in the air or overlapping ground shadows behind the shop.
+                sCtx.globalCompositeOperation = 'destination-in';
+                const shopPos = this.gridToScreen(3, 2, camX, camY);
+                sCtx.drawImage(ASSETS.shop, shopPos.x, shopPos.y, tileSize * 3, tileSize * 2);
+
                 sCtx.restore();
 
                 // Composite the flattened shadows onto the main canvas with single uniform opacity
