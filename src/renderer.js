@@ -2,17 +2,15 @@ import { CONFIG, MAP_DATA } from './config.js';
 import { ASSETS } from './assets.js';
 import { drawCharacter } from './character-renderer.js';
 import { drawWall, drawGateOverlay } from './wall-renderer.js';
+import { ShadowRenderer } from './shadow-renderer.js';
 
 export class Renderer {
     constructor(canvas) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         
-        // Shadow Buffer (Scratchpad for flattening character shadows)
-        this.shadowCanvas = document.createElement('canvas');
-        this.shadowCanvas.width = canvas.width; 
-        this.shadowCanvas.height = canvas.height;
-        this.shadowCtx = this.shadowCanvas.getContext('2d');
+        // removed inline shadowCanvas/shadowCtx; now managed by ShadowRenderer
+        this.shadowRenderer = new ShadowRenderer(this.canvas);
 
         // Reusable bucket arrays to reduce GC
         this.entitiesByRow = Array.from({ length: CONFIG.GRID_H }, () => []);
@@ -40,9 +38,8 @@ export class Renderer {
             this.canvas.height = h;
         }
 
-        // Resize shadow buffer to match main canvas
-        this.shadowCanvas.width = this.canvas.width;
-        this.shadowCanvas.height = this.canvas.height;
+        // removed direct shadowCanvas resize; ShadowRenderer handles its own buffer sizing
+        this.shadowRenderer.resize(this.canvas);
 
         this.ctx.imageSmoothingEnabled = false;
         
@@ -168,101 +165,18 @@ export class Renderer {
             }
         }
 
-        // 1.5 Unified Shadow Pass
-        // Render shadows.
-        // Special logic: Shadows cast ONTO the shop face must be rendered ON TOP of the shop (z-index wise).
-        // Ground shadows are rendered into an offscreen buffer to prevent double-darkening.
-        
-        const highShadows = []; // Shadows to draw on top of shop
-
+        // 1.5 Unified Shadow Pass (delegated to ShadowRenderer)
+        let highShadows = [];
         if (shadowOpacity > 0.01) {
-            const allChars = [];
-            Object.values(gameState.players).forEach(p => allChars.push({ obj: p, isNpc: false }));
-            gameState.npcs.forEach(npc => allChars.push({ obj: npc, isNpc: true }));
-
-            // Shop Bounds for shadow casting (Visual Sprite is at row 3)
-            const shopMinX = 2.5;
-            const shopMaxX = 6.5;
-            const shopBaseY = 4.0;
-
-            // Only lift shadow if pointing NORTH (sy < 0) and Player is SOUTH of shop
-            // sy is the Y component of the shadow vector. Negative means pointing up (North).
-            const shadowPointsNorth = sy < 0; 
-
-            allChars.forEach(item => {
-                const { obj } = item;
-                
-                // Strict check: Does the shadow vector actually intersect the shop face?
-                if (shadowPointsNorth && obj.y > shopBaseY) {
-                    // Tip of shadow relative to feet (using global sun vector)
-                    const tipY = obj.y + sy; 
-                    
-                    // Check if shadow crosses the Shop Base Line
-                    if (tipY < shopBaseY) {
-                        // Calculate Intersection X
-                        // t = (targetY - startY) / dy => (shopBaseY - obj.y) / sy
-                        const t = (shopBaseY - obj.y) / sy;
-                        const ix = obj.x + t * sx;
-                        
-                        if (ix > shopMinX && ix < shopMaxX) {
-                            highShadows.push(item);
-                        }
-                    }
-                }
-            });
-
-            const sCtx = this.shadowCtx;
-            sCtx.clearRect(0, 0, this.shadowCanvas.width, this.shadowCanvas.height);
-            
-            sCtx.save();
-            sCtx.fillStyle = 'black';
-            // Note: We avoid ctx.filter here for compatibility and robust color merging.
-            // Instead, we use composite operations below to force everything to black silhouette.
-
-            // A. Ground Character Shadows (Draw ALL)
-            // We draw all shadows on the ground without clipping. 
-            // The ones "behind" the shop will simply be occluded by the Shop sprite when it is drawn later.
-            // This prevents "slither" gaps where the clipping might have been slightly off.
-            allChars.forEach(({ obj, isNpc }) => {
-                const pos = this.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
-                if (pos.x < -tileSize || pos.x > width + tileSize || pos.y < -tileSize || pos.y > height + tileSize) return;
-
-                const feetOffset = tileSize * (25/32); 
-                const cx = pos.x + tileSize / 2;
-                const pivotY = pos.y + feetOffset;
-
-                sCtx.save();
-                sCtx.translate(cx, pivotY);
-                sCtx.transform(1, 0, -sx, -sy, 0, 0);
-                drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
-                sCtx.restore();
-            });
-
-            // B. Shop Shadow (Always Ground)
-            // Drawn into the same buffer so it merges with character shadows without double-darkening.
-            const shopPos = this.gridToScreen(3, 2, camX, camY);
-            if (shopPos.x > -tileSize * 5 && shopPos.x < width + tileSize * 5 && 
-                shopPos.y > -tileSize * 5 && shopPos.y < height + tileSize * 5) {
-                sCtx.save();
-                sCtx.translate(shopPos.x + tileSize * 1.5, shopPos.y + tileSize * 2);
-                sCtx.transform(1, 0, -sx, -sy, 0, 0);
-                sCtx.drawImage(ASSETS.shop, -tileSize * 1.5, -tileSize * 2, tileSize * 3, tileSize * 2);
-                sCtx.restore();
-            }
-
-            // Force all drawn shadows to pure opaque black (silhouette) while preserving their alpha channel
-            // This ensures colored sprites (Shop) and black shapes (Characters) become the same "shadow color".
-            sCtx.globalCompositeOperation = 'source-in';
-            sCtx.fillRect(0, 0, width, height);
-
-            sCtx.restore();
-
-            // Composite Ground Shadows to Main Canvas
-            ctx.save();
-            ctx.globalAlpha = shadowOpacity;
-            ctx.globalCompositeOperation = 'multiply'; 
-            ctx.drawImage(this.shadowCanvas, 0, 0);
-            ctx.restore();
+            highShadows = this.shadowRenderer.renderGroundAndShopShadows(
+                this,
+                gameState,
+                camX,
+                camY,
+                sx,
+                sy,
+                shadowOpacity
+            );
         }
 
         // 2. Unified Depth-Sorted Render Pass (Walls, Entities, Shop)
@@ -372,52 +286,16 @@ export class Renderer {
                 this.drawProjectile(ctx, item.obj, camX, camY, tileSize);
 
             } else if (item.type === 'high_shadows_batch') {
-                // Batch Render High Shadows to reusable shadow buffer to flatten overlaps
-                const sCtx = this.shadowCtx;
-                sCtx.clearRect(0, 0, width, height); // Clear buffer (previously used by ground shadows)
-                
-                sCtx.save();
-                
-                // No Clipping here either - we rely entirely on the Mask (destination-in) below
-                // to ensure the shadow only appears on the Shop structure itself.
-
-                sCtx.fillStyle = 'black';
-                sCtx.globalAlpha = 1.0;
-                
-                item.items.forEach(({ obj, isNpc }) => {
-                    const pos = this.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
-                    if (pos.x < -tileSize || pos.x > width + tileSize || pos.y < -tileSize || pos.y > height + tileSize) return;
-
-                    const feetOffset = tileSize * (25/32); 
-                    const cx = pos.x + tileSize / 2;
-                    const pivotY = pos.y + feetOffset;
-
-                    sCtx.save();
-                    sCtx.translate(cx, pivotY);
-                    sCtx.transform(1, 0, -item.sx, -item.sy, 0, 0);
-                    drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
-                    sCtx.restore();
-                });
-
-                // Force to black silhouette (same logic as ground shadows for consistency)
-                sCtx.globalCompositeOperation = 'source-in';
-                sCtx.fillRect(0, 0, width, height);
-
-                // MASK WITH SHOP SPRITE
-                // This ensures shadows are only drawn on the shop structure itself, 
-                // preventing them from "floating" in the air or overlapping ground shadows behind the shop.
-                sCtx.globalCompositeOperation = 'destination-in';
-                const shopPos = this.gridToScreen(3, 2, camX, camY);
-                sCtx.drawImage(ASSETS.shop, shopPos.x, shopPos.y, tileSize * 3, tileSize * 2);
-
-                sCtx.restore();
-
-                // Composite the flattened shadows onto the main canvas with single uniform opacity
-                ctx.save();
-                ctx.globalAlpha = item.opacity;
-                ctx.globalCompositeOperation = 'multiply';
-                ctx.drawImage(this.shadowCanvas, 0, 0);
-                ctx.restore();
+                // removed inline high shadow batch logic; now delegated to ShadowRenderer
+                this.shadowRenderer.renderHighShadowsBatch(
+                    this,
+                    item.items,
+                    item.opacity,
+                    item.sx,
+                    item.sy,
+                    camX,
+                    camY
+                );
             }
         });
 

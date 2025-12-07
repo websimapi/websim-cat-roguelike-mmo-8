@@ -3,91 +3,104 @@ import { ASSETS } from './assets.js';
 import { drawCharacter } from './character-renderer.js';
 
 export class ShadowRenderer {
-    constructor(width, height) {
-        this.canvas = document.createElement('canvas');
-        this.ctx = this.canvas.getContext('2d');
-        this.resize(width, height);
+    constructor(mainCanvas) {
+        this.shadowCanvas = document.createElement('canvas');
+        this.shadowCtx = this.shadowCanvas.getContext('2d');
+        this.resize(mainCanvas);
     }
 
-    resize(width, height) {
-        this.canvas.width = width;
-        this.canvas.height = height;
+    resize(mainCanvas) {
+        this.shadowCanvas.width = mainCanvas.width;
+        this.shadowCanvas.height = mainCanvas.height;
+
+        if (this.shadowCtx) {
+            this.shadowCtx.imageSmoothingEnabled = false;
+        }
     }
 
     /**
-     * Identifies which characters are casting shadows onto the shop face.
+     * Renders all ground shadows (characters + shop) into the shadow buffer,
+     * composites them onto the main canvas, and returns the list of characters
+     * whose shadows should also be drawn on top of the shop (highShadows).
      */
-    calculateHighShadows(gameState, sx, sy) {
+    renderGroundAndShopShadows(renderer, gameState, camX, camY, sx, sy, shadowOpacity) {
+        const { canvas } = renderer;
+        const ctx = renderer.ctx;
+        const sCtx = this.shadowCtx;
+        const { width, height } = canvas;
+        const tileSize = CONFIG.TILE_SIZE * CONFIG.SCALE;
+
+        const allChars = [];
+        Object.values(gameState.players).forEach(p => allChars.push({ obj: p, isNpc: false }));
+        gameState.npcs.forEach(npc => allChars.push({ obj: npc, isNpc: true }));
+
         const highShadows = [];
+
+        // Shop Bounds for shadow casting (Visual Sprite is at row 3)
         const shopMinX = 2.5;
         const shopMaxX = 6.5;
         const shopBaseY = 4.0;
-        
-        // Only valid if shadow points North (sy < 0)
-        if (sy >= 0) return highShadows;
 
-        const allChars = [
-            ...Object.values(gameState.players).map(p => ({ obj: p, isNpc: false })),
-            ...gameState.npcs.map(n => ({ obj: n, isNpc: true }))
-        ];
+        // Only lift shadow if pointing NORTH (sy < 0) and Player is SOUTH of shop
+        const shadowPointsNorth = sy < 0;
 
-        allChars.forEach(item => {
-            const { obj } = item;
-            if (obj.y > shopBaseY) {
-                const tipY = obj.y + sy; 
-                // Check intersection
-                if (tipY < shopBaseY) {
-                    const t = (shopBaseY - obj.y) / sy;
-                    const ix = obj.x + t * sx;
-                    if (ix > shopMinX && ix < shopMaxX) {
-                        highShadows.push(item);
+        // Determine which character shadows intersect the shop face
+        if (shadowOpacity > 0.01 && shadowPointsNorth) {
+            allChars.forEach(item => {
+                const { obj } = item;
+
+                if (obj.y > shopBaseY) {
+                    const tipY = obj.y + sy; // shadow tip y
+
+                    if (tipY < shopBaseY) {
+                        const t = (shopBaseY - obj.y) / sy;
+                        const ix = obj.x + t * sx;
+
+                        if (ix > shopMinX && ix < shopMaxX) {
+                            highShadows.push(item);
+                        }
                     }
                 }
-            }
-        });
-        return highShadows;
-    }
+            });
+        }
 
-    /**
-     * Renders normal ground shadows (characters + shop)
-     */
-    drawGroundShadows(ctx, gameState, sx, sy, opacity, gridToScreenFn) {
-        if (opacity <= 0.01) return;
+        if (shadowOpacity <= 0.01) {
+            return highShadows;
+        }
 
-        const { width, height } = this.canvas;
-        const sCtx = this.ctx;
-        const tileSize = CONFIG.TILE_SIZE * CONFIG.SCALE;
+        // Clear the shadow buffer
+        sCtx.clearRect(0, 0, this.shadowCanvas.width, this.shadowCanvas.height);
 
-        // Clear buffer
-        sCtx.clearRect(0, 0, width, height);
         sCtx.save();
         sCtx.fillStyle = 'black';
 
-        // 1. Characters
-        const allChars = [
-            ...Object.values(gameState.players).map(p => ({ obj: p, isNpc: false })),
-            ...gameState.npcs.map(n => ({ obj: n, isNpc: true }))
-        ];
-
+        // A. Ground Character Shadows (Draw ALL)
         allChars.forEach(({ obj, isNpc }) => {
-            const pos = gridToScreenFn(obj.x - 0.5, obj.y - 0.5);
-            if (pos.x < -tileSize || pos.x > width + tileSize || pos.y < -tileSize || pos.y > height + tileSize) return;
+            const pos = renderer.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
+            if (
+                pos.x < -tileSize || 
+                pos.x > width + tileSize || 
+                pos.y < -tileSize || 
+                pos.y > height + tileSize
+            ) return;
 
-            const feetOffset = tileSize * (25/32); 
+            const feetOffset = tileSize * (25 / 32);
             const cx = pos.x + tileSize / 2;
             const pivotY = pos.y + feetOffset;
 
             sCtx.save();
             sCtx.translate(cx, pivotY);
             sCtx.transform(1, 0, -sx, -sy, 0, 0);
-            drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
+            drawCharacter(sCtx, obj, -tileSize / 2, -feetOffset, tileSize, isNpc, true);
             sCtx.restore();
         });
 
-        // 2. Shop Shadow
-        const shopPos = gridToScreenFn(3, 2);
-        if (shopPos.x > -tileSize * 5 && shopPos.x < width + tileSize * 5 && 
-            shopPos.y > -tileSize * 5 && shopPos.y < height + tileSize * 5) {
+        // B. Shop Shadow (Always Ground)
+        const shopPos = renderer.gridToScreen(3, 2, camX, camY);
+        if (
+            shopPos.x > -tileSize * 5 && shopPos.x < width + tileSize * 5 && 
+            shopPos.y > -tileSize * 5 && shopPos.y < height + tileSize * 5
+        ) {
             sCtx.save();
             sCtx.translate(shopPos.x + tileSize * 1.5, shopPos.y + tileSize * 2);
             sCtx.transform(1, 0, -sx, -sy, 0, 0);
@@ -95,65 +108,79 @@ export class ShadowRenderer {
             sCtx.restore();
         }
 
-        // Flatten to pure silhouette
+        // Force silhouettes to pure black while preserving alpha
         sCtx.globalCompositeOperation = 'source-in';
         sCtx.fillRect(0, 0, width, height);
+
         sCtx.restore();
 
-        // Composite to main canvas
+        // Composite Ground Shadows to Main Canvas
         ctx.save();
-        ctx.globalAlpha = opacity;
-        ctx.globalCompositeOperation = 'multiply'; 
-        ctx.drawImage(this.canvas, 0, 0);
+        ctx.globalAlpha = shadowOpacity;
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.drawImage(this.shadowCanvas, 0, 0);
         ctx.restore();
+
+        return highShadows;
     }
 
     /**
-     * Renders the batch of shadows that fall onto the shop face.
+     * Renders all high (on-top-of-shop) shadows as a single flattened batch
+     * onto the main canvas using the internal shadow buffer.
      */
-    drawHighShadowBatch(ctx, items, sx, sy, opacity, gridToScreenFn) {
-        if (items.length === 0 || opacity <= 0.01) return;
+    renderHighShadowsBatch(renderer, items, opacity, sx, sy, camX, camY) {
+        if (!items || !items.length || opacity <= 0.01) return;
 
-        const { width, height } = this.canvas;
-        const sCtx = this.ctx;
+        const { canvas } = renderer;
+        const ctx = renderer.ctx;
+        const sCtx = this.shadowCtx;
+        const { width, height } = canvas;
         const tileSize = CONFIG.TILE_SIZE * CONFIG.SCALE;
 
+        // Clear buffer
         sCtx.clearRect(0, 0, width, height);
+
         sCtx.save();
         sCtx.fillStyle = 'black';
         sCtx.globalAlpha = 1.0;
 
+        // Draw character silhouettes into buffer
         items.forEach(({ obj, isNpc }) => {
-            const pos = gridToScreenFn(obj.x - 0.5, obj.y - 0.5);
-            if (pos.x < -tileSize || pos.x > width + tileSize || pos.y < -tileSize || pos.y > height + tileSize) return;
+            const pos = renderer.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
+            if (
+                pos.x < -tileSize || 
+                pos.x > width + tileSize || 
+                pos.y < -tileSize || 
+                pos.y > height + tileSize
+            ) return;
 
-            const feetOffset = tileSize * (25/32); 
+            const feetOffset = tileSize * (25 / 32);
             const cx = pos.x + tileSize / 2;
             const pivotY = pos.y + feetOffset;
 
             sCtx.save();
             sCtx.translate(cx, pivotY);
             sCtx.transform(1, 0, -sx, -sy, 0, 0);
-            drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
+            drawCharacter(sCtx, obj, -tileSize / 2, -feetOffset, tileSize, isNpc, true);
             sCtx.restore();
         });
 
-        // Force to black silhouette
+        // Force silhouettes to black
         sCtx.globalCompositeOperation = 'source-in';
         sCtx.fillRect(0, 0, width, height);
 
-        // MASK WITH SHOP SPRITE
+        // Mask with Shop sprite so these shadows only appear on the shop
         sCtx.globalCompositeOperation = 'destination-in';
-        const shopPos = gridToScreenFn(3, 2);
+        const shopPos = renderer.gridToScreen(3, 2, camX, camY);
         sCtx.drawImage(ASSETS.shop, shopPos.x, shopPos.y, tileSize * 3, tileSize * 2);
 
         sCtx.restore();
 
-        // Composite the flattened shadows onto the main canvas with single uniform opacity
+        // Composite onto main canvas
         ctx.save();
         ctx.globalAlpha = opacity;
-        ctx.globalCompositeOperation = 'multiply'; 
-        ctx.drawImage(this.canvas, 0, 0);
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.drawImage(this.shadowCanvas, 0, 0);
         ctx.restore();
     }
 }
