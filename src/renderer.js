@@ -231,7 +231,8 @@ export class Renderer {
             
             sCtx.save();
             sCtx.fillStyle = 'black';
-            sCtx.filter = 'brightness(0)'; 
+            // Note: We avoid ctx.filter here for compatibility and robust color merging.
+            // Instead, we use composite operations below to force everything to black silhouette.
 
             // A. Ground Character Shadows (Draw FIRST)
             groundShadows.forEach(({ obj, isNpc, isHigh }) => {
@@ -245,7 +246,6 @@ export class Renderer {
                 sCtx.save();
 
                 // CLIP: If this shadow hits the high wall, do NOT draw the part that goes "through" the wall on the ground.
-                // This prevents overlapping shadows (double darkening) and seeing shadows through the transparent shop.
                 if (isHigh) {
                     sCtx.beginPath();
                     // Draw only below the shop base line (screen Y increases downwards)
@@ -259,9 +259,8 @@ export class Renderer {
                 sCtx.restore();
             });
 
-            // B. Shop Shadow (Always Ground) - Draw SECOND to layer ON TOP of characters (if overlapping)
-            // This ensures the massive shop shadow occludes character ground shadows if perceived as distinct layers,
-            // though they usually merge due to same color/opacity.
+            // B. Shop Shadow (Always Ground)
+            // Drawn into the same buffer so it merges with character shadows without double-darkening.
             const shopPos = this.gridToScreen(3, 2, camX, camY);
             if (shopPos.x > -tileSize * 5 && shopPos.x < width + tileSize * 5 && 
                 shopPos.y > -tileSize * 5 && shopPos.y < height + tileSize * 5) {
@@ -272,9 +271,14 @@ export class Renderer {
                 sCtx.restore();
             }
 
+            // Force all drawn shadows to pure opaque black (silhouette) while preserving their alpha channel
+            // This ensures colored sprites (Shop) and black shapes (Characters) become the same "shadow color".
+            sCtx.globalCompositeOperation = 'source-in';
+            sCtx.fillRect(0, 0, width, height);
+
             sCtx.restore();
 
-            // Composite Ground Shadows
+            // Composite Ground Shadows to Main Canvas
             ctx.save();
             ctx.globalAlpha = shadowOpacity;
             ctx.globalCompositeOperation = 'multiply'; 
@@ -396,19 +400,16 @@ export class Renderer {
                 sCtx.save();
                 
                 // Clipping: Only draw above the Shop Base Line (the Wall)
-                // This prevents the high shadow from drawing on the ground and double-darkening the shop shadow
                 const shopBaseScreenY = this.gridToScreen(0, 4.0, camX, camY).y; // Screen Y for Grid Y=4.0
                 sCtx.beginPath();
                 sCtx.rect(0, 0, width, shopBaseScreenY);
                 sCtx.clip();
 
                 sCtx.fillStyle = 'black';
-                sCtx.globalAlpha = 1.0; // Draw opaque silhouettes first
+                sCtx.globalAlpha = 1.0;
                 
                 item.items.forEach(({ obj, isNpc }) => {
                     const pos = this.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
-                    
-                    // Optimization: Cull offscreen shadows
                     if (pos.x < -tileSize || pos.x > width + tileSize || pos.y < -tileSize || pos.y > height + tileSize) return;
 
                     const feetOffset = tileSize * (25/32); 
@@ -421,6 +422,11 @@ export class Renderer {
                     drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
                     sCtx.restore();
                 });
+
+                // Force to black silhouette (same logic as ground shadows for consistency)
+                sCtx.globalCompositeOperation = 'source-in';
+                sCtx.fillRect(0, 0, width, height);
+
                 sCtx.restore();
 
                 // Composite the flattened shadows onto the main canvas with single uniform opacity
