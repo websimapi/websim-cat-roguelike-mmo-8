@@ -185,6 +185,8 @@ export class Renderer {
             const shopMinX = 2.5;
             const shopMaxX = 6.5;
             const shopBaseY = 4.0;
+            const shopBaseScreenY = this.gridToScreen(0, shopBaseY, camX, camY).y;
+
             // Only lift shadow if pointing NORTH (sy < 0) and Player is SOUTH of shop
             // sy is the Y component of the shadow vector. Negative means pointing up (North).
             const shadowPointsNorth = sy < 0; 
@@ -216,10 +218,11 @@ export class Renderer {
                     // If casting on shop, add to BOTH:
                     // 1. Ground Shadow: Merges with Shop Shadow on the floor.
                     // 2. High Shadow: Draws on shop face (clipped to wall area).
-                    groundShadows.push(item);
+                    // We flag isHigh=true so the ground shadow renderer knows to clip it (stopping at the wall).
+                    groundShadows.push({ ...item, isHigh: true });
                     highShadows.push(item);
                 } else {
-                    groundShadows.push(item);
+                    groundShadows.push({ ...item, isHigh: false });
                 }
             });
 
@@ -231,7 +234,7 @@ export class Renderer {
             sCtx.filter = 'brightness(0)'; 
 
             // A. Ground Character Shadows (Draw FIRST)
-            groundShadows.forEach(({ obj, isNpc }) => {
+            groundShadows.forEach(({ obj, isNpc, isHigh }) => {
                 const pos = this.gridToScreen(obj.x - 0.5, obj.y - 0.5, camX, camY);
                 if (pos.x < -tileSize || pos.x > width + tileSize || pos.y < -tileSize || pos.y > height + tileSize) return;
 
@@ -240,6 +243,16 @@ export class Renderer {
                 const pivotY = pos.y + feetOffset;
 
                 sCtx.save();
+
+                // CLIP: If this shadow hits the high wall, do NOT draw the part that goes "through" the wall on the ground.
+                // This prevents overlapping shadows (double darkening) and seeing shadows through the transparent shop.
+                if (isHigh) {
+                    sCtx.beginPath();
+                    // Draw only below the shop base line (screen Y increases downwards)
+                    sCtx.rect(0, shopBaseScreenY, width, height - shopBaseScreenY);
+                    sCtx.clip();
+                }
+
                 sCtx.translate(cx, pivotY);
                 sCtx.transform(1, 0, -sx, -sy, 0, 0);
                 drawCharacter(sCtx, obj, -tileSize/2, -feetOffset, tileSize, isNpc, true);
